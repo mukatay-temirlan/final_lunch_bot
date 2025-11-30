@@ -1,7 +1,6 @@
 import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, User
-# Added JobQueue import for scheduling tasks
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, JobQueue, CallbackContext 
 from datetime import time, timedelta, timezone, datetime 
 import json 
@@ -10,16 +9,17 @@ import json
 # 1. BOT TOKEN: Loaded from Render Environment Variable (Secret).
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJschVpfWU") 
 # 2. TARGET CHAT ID: REPLACE WITH YOUR GROUP/CHAT ID (e.g., -1001234567890)
-# NOTE: Target Chat ID is converted to an integer for use with JobQueue/send_message.
-TARGET_CHAT_ID = int(os.environ.get("TARGET_CHAT_ID", "-1003232384383"))
-# 3. RENDER ENVIRONMENT VARS
-PORT = int(os.environ.get("PORT", 8080))
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "YOUR_RENDER_URL_HERE") # e.g., https://my-bot-service.onrender.com
+# NOTE: Target Chat ID must be an integer (e.g., -1001234567890).
+TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003232384383")
 
 # --- Time Constants (Kazakhstan Time Zone - UTC+6) ---
 KAZAKHSTAN_TZ = timezone(timedelta(hours=6))
 POLL_START_TIME = time(8, 0, 0)   # Poll starts at 08:00 AM KZT
 POLL_END_TIME = time(10, 30, 0) # Poll closes at 10:30 AM KZT
+
+# --- RENDER ENVIRONMENT VARS ---
+PORT = int(os.environ.get("PORT", 8080))
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "YOUR_RENDER_URL_HERE") # e.g., https://my-bot-service.onrender.com
 
 # --- Bot Strings (Kazakh Language) ---
 POLL_QUESTION = "Сіз түскі ас ішесіз бе?"
@@ -36,21 +36,22 @@ POLL_STARTED = "📢 *Дауыс беру басталды!* 📢\n\n"
 POLL_ENDED_ANNOUNCEMENT = "🛑 *Дауыс беру аяқталды!* 🛑\n\n"
 POLL_INACTIVE_ALERT = "Бұл дауыс беру аяқталды немесе белсенді емес."
 POLL_ENDED_BY_TIME = "Дауыс беру уақыты аяқталды (10:30)."
-# No longer needed as manual /poll is removed
-# POLL_TOO_LATE_TO_START = "❌ *Қате:* Бүгінгі күнге дауыс беруді бастау уақыты (10:30) өтіп кетті. Келесі күнге дауыс беруді күтіңіз." 
-VOTE_REGISTERED_ALERT = "Сіздің дауысыңыз тіркелді. Рахмет!" # Subtle notification
+VOTE_REGISTERED_ALERT = "Сіздің дауысыңыз тіркелді. Рахмет!" 
 RESULTS_HEADER = "📋 *Түскі Ас Дауыс Беру Нәтижелері* 📋\n\n"
 NOT_ACTIVE_MESSAGE = "Дауыс беру қазір белсенді емес. Келесі дауыс беруді сағат 08:00-де күтіңіз." 
 ONLY_IN_TARGET_CHAT = "Бұл пәрменді тек тағайындалған топта ғана қолдануға болады."
 
+# Global variable to hold the integer chat ID, initialized in main()
+TARGET_CHAT_ID = None 
+
 # --- State Management (In-Memory/Global - NOTE: This will reset on Free Tier spin-down) ---
 poll_state = {
     'is_active': False,
-    'yes_voters': {}, # {user_id: full_name}
-    'no_voters': {},  # {user_id: full_name}
+    'yes_voters': {}, 
+    'no_voters': {},  
     'poll_message_id': None,
-    'target_chat_id': TARGET_CHAT_ID, # Stored as integer
-    'lunch_date': None,       # Date of the planned lunch (YYYY-MM-DD string)
+    'target_chat_id': None, # Will be set in main()
+    'lunch_date': None,       
 }
 STATE_FILE = "poll_state.json" 
 
@@ -69,18 +70,22 @@ def load_state():
         with open(STATE_FILE, 'r') as f:
             data = json.load(f)
             poll_state.update(data)
-            # Ensure target_chat_id is loaded as an integer
-            poll_state['target_chat_id'] = int(data.get('target_chat_id', TARGET_CHAT_ID)) 
+            # Ensure target_chat_id is loaded as an integer if available
+            if 'target_chat_id' in data:
+                 # It might be stored as string or int, ensure it's an int
+                poll_state['target_chat_id'] = int(data['target_chat_id'])
     except (FileNotFoundError, json.JSONDecodeError):
         logger.info("No saved state found or file corrupted. Starting clean.")
-        poll_state['target_chat_id'] = TARGET_CHAT_ID # Use the constant value if load fails
+        # If load fails, target_chat_id remains None until main() runs
+        pass
 
 def save_state():
     """Saves poll state to a file."""
     try:
-        # Use TARGET_CHAT_ID as string for saving, but integer for actual use
+        # Copy and ensure target_chat_id is stored as string for JSON serialization
         state_to_save = poll_state.copy()
-        state_to_save['target_chat_id'] = str(poll_state['target_chat_id']) 
+        if state_to_save.get('target_chat_id') is not None:
+            state_to_save['target_chat_id'] = str(poll_state['target_chat_id']) 
         with open(STATE_FILE, 'w') as f:
             json.dump(state_to_save, f, indent=4)
     except Exception as e:
@@ -131,11 +136,9 @@ def check_and_expire_poll() -> bool:
     Checks if the poll is currently expired based on the set lunch date and KZT time (10:30 AM).
     If expired, it sets is_active to False and saves state.
     Returns True if the poll was active and is now expired, False otherwise.
-    
-    This function acts as a safety measure in case the scheduled job fails to run exactly at 10:30 AM.
     """
     if not poll_state['is_active'] or not poll_state['lunch_date']:
-        return False # Not active or missing date
+        return False
 
     try:
         # 1. Get current date/time in Kazakhstan time
@@ -159,18 +162,19 @@ def check_and_expire_poll() -> bool:
         logger.error("Invalid date format stored in poll_state. Expiring poll to be safe.")
         poll_state['is_active'] = False
         save_state()
-        return True # Default to expired if date is corrupted
+        return True 
 
 # --- Scheduled Job Functions ---
 
 async def start_poll_job(context: CallbackContext):
-    """
-    1) Date should be written automatically by the date of the day. 
-    3) The bot should automatically start to ask from 8.00 am.
-    """
+    """Starts the poll automatically at 08:00 AM KZT."""
     global poll_state
     
-    load_state() # Ensure state is current
+    load_state() 
+
+    if poll_state['target_chat_id'] is None:
+        logger.error("start_poll_job failed: TARGET_CHAT_ID is not set in poll_state.")
+        return
 
     # 1. Get today's date in YYYY-MM-DD format (Automatic Date)
     now_kz = datetime.now(KAZAKHSTAN_TZ)
@@ -178,7 +182,6 @@ async def start_poll_job(context: CallbackContext):
     
     logger.info(f"Scheduled start job triggered for {lunch_date_str}.")
 
-    # Check if a poll is already active for today
     if poll_state['is_active'] and poll_state['lunch_date'] == lunch_date_str:
         logger.info("Poll already active for today. Skipping start.")
         return
@@ -218,18 +221,20 @@ async def start_poll_job(context: CallbackContext):
 
 
 async def end_poll_job(context: CallbackContext):
-    """
-    3) The bot should automatically finish asking at 10.30 am and show results of poll.
-    """
+    """Ends the poll automatically at 10:30 AM KZT and shows results."""
     global poll_state
     
-    load_state() # Ensure state is current
+    load_state() 
     
     now_kz = datetime.now(KAZAKHSTAN_TZ)
     today_date_str = now_kz.strftime('%Y-%m-%d')
     
     logger.info(f"Scheduled end job triggered for {today_date_str}.")
     
+    if poll_state['target_chat_id'] is None:
+        logger.error("end_poll_job failed: TARGET_CHAT_ID is not set in poll_state.")
+        return
+
     # Only end the poll if it is active AND it is the correct day
     if poll_state['is_active'] and poll_state['lunch_date'] == today_date_str:
         
@@ -264,9 +269,12 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sends the current voting results."""
     load_state() 
     
+    # If the global TARGET_CHAT_ID wasn't set (e.g., initial run), fall back to global constant for comparison
+    target_chat_id_for_check = poll_state.get('target_chat_id') or TARGET_CHAT_ID
+
     # Check 1: Chat validation
     is_private_chat = update.message.chat.type == "private"
-    is_target_chat = update.effective_chat.id == poll_state['target_chat_id']
+    is_target_chat = update.effective_chat.id == target_chat_id_for_check
 
     if not is_private_chat and not is_target_chat:
         await update.message.reply_text(ONLY_IN_TARGET_CHAT)
@@ -275,7 +283,6 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check 2: Automatic Expiry Check
     is_expired = check_and_expire_poll()
     if is_expired:
-        # If the poll just expired via this check, send the results
         await update.message.reply_text(f"{POLL_ENDED_ANNOUNCEMENT}{format_results_message()}", parse_mode='Markdown')
         return
 
@@ -285,8 +292,6 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     results = format_results_message()
     await update.message.reply_text(results, parse_mode='Markdown')
-
-# NOTE: manual_poll_command is removed as the poll should start automatically at 08:00 AM.
         
 
 # --- Callback Query Handler (Button Clicks) ---
@@ -294,7 +299,8 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles button clicks (Yes/No votes)."""
     query = update.callback_query
-    
+    await query.answer() # Immediately answer the callback query to remove the loading state
+
     load_state() 
 
     # Check 1: Automatic Expiry Check
@@ -311,28 +317,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = query.from_user
     user_id = user.id
-    user_name = get_voter_name(user) # Pass the User object
+    user_name = get_voter_name(user) 
 
     vote_type = query.data # 'vote_yes' or 'vote_no'
     
     # Check current vote state and update lists
     if vote_type == 'vote_yes':
         if user_id in poll_state['yes_voters']:
-            # 2) When users click yes or no, there should be a notification like your response has been recorded
             await query.answer(text=f"Сіздің дауысыңыз *{YES_OPTION}* болып тіркелген.", show_alert=False) 
             return
         
         poll_state['yes_voters'][user_id] = user_name
-        poll_state['no_voters'].pop(user_id, None) # Remove if they were 'No'
+        poll_state['no_voters'].pop(user_id, None) 
         
     elif vote_type == 'vote_no':
         if user_id in poll_state['no_voters']:
-            # 2) When users click yes or no, there should be a notification like your response has been recorded
             await query.answer(text=f"Сіздің дауысыңыз *{NO_OPTION}* болып тіркелген.", show_alert=False)
             return
             
         poll_state['no_voters'][user_id] = user_name
-        poll_state['yes_voters'].pop(user_id, None) # Remove if they were 'Yes'
+        poll_state['yes_voters'].pop(user_id, None) 
 
     save_state()
     # 2) When users click yes or no, there should be a notification like your response has been recorded
@@ -344,64 +348,67 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """
     Starts the bot in Webhook mode and sets up the automatic scheduling (JobQueue).
-    
-    !!! IMPORTANT RELIABILITY NOTE !!!
-    The scheduling relies on the Python process running continuously. On free-tier services 
-    like Render, the bot process often sleeps after inactivity (due to no incoming webhooks). 
-    If the bot is asleep at 08:00 AM KZT, the poll *will not start*.
     """
-    # Ensure configuration is complete before running
+    global TARGET_CHAT_ID, poll_state
+    
+    # 1. Configuration Validation and Type Conversion
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         logger.error("FATAL: BOT_TOKEN is missing. Please set the Render Secret.")
         return
-        
-    # Convert TARGET_CHAT_ID string from env to integer here
-    global TARGET_CHAT_ID 
-    try:
-        TARGET_CHAT_ID = int(os.environ.get("TARGET_CHAT_ID", "-1003232384383"))
-    except ValueError:
-        logger.error("FATAL: TARGET_CHAT_ID environment variable is not a valid integer.")
-        return
-        
+    
     if RENDER_EXTERNAL_URL == "YOUR_RENDER_URL_HERE":
          logger.error("FATAL: RENDER_EXTERNAL_URL is missing. Please set the Render Environment Variable.")
          return
-    
-    # Load any potentially saved state (though unreliable on free tier)
+
+    try:
+        # Ensure TARGET_CHAT_ID is set globally as an integer from the environment
+        TARGET_CHAT_ID = int(TARGET_CHAT_ID_RAW)
+        # Update poll_state with the validated integer chat ID
+        poll_state['target_chat_id'] = TARGET_CHAT_ID 
+    except ValueError:
+        logger.error(f"FATAL: TARGET_CHAT_ID environment variable '{TARGET_CHAT_ID_RAW}' is not a valid integer.")
+        return
+        
+    # Load any potentially saved state (unreliable on free tier but necessary)
     load_state()
 
-    # Create the Application and JobQueue
+    # 2. Create the Application and JobQueue
     application = Application.builder().token(BOT_TOKEN).build()
     job_queue = application.job_queue
 
-    # 3) Schedule the automatic start at 08:00 AM KZT
-    job_queue.run_daily(
-        start_poll_job, 
-        POLL_START_TIME, 
-        days=(0, 1, 2, 3, 4, 5, 6), # Run every day
-        tzinfo=KAZAKHSTAN_TZ,
-        name='daily_poll_start'
-    )
-    
-    # 3) Schedule the automatic end and results announcement at 10:30 AM KZT
-    job_queue.run_daily(
-        end_poll_job, 
-        POLL_END_TIME, 
-        days=(0, 1, 2, 3, 4, 5, 6), # Run every day
-        tzinfo=KAZAKHSTAN_TZ,
-        name='daily_poll_end'
-    )
-    
-    logger.info(f"Jobs scheduled for start at {POLL_START_TIME} and end at {POLL_END_TIME} KZT.")
+    # 3. Schedule and Start JobQueue (FIX)
+    if job_queue:
+        job_queue.run_daily(
+            start_poll_job, 
+            POLL_START_TIME, 
+            days=(0, 1, 2, 3, 4, 5, 6),
+            tzinfo=KAZAKHSTAN_TZ,
+            name='daily_poll_start'
+        )
+        
+        job_queue.run_daily(
+            end_poll_job, 
+            POLL_END_TIME, 
+            days=(0, 1, 2, 3, 4, 5, 6),
+            tzinfo=KAZAKHSTAN_TZ,
+            name='daily_poll_end'
+        )
+        
+        logger.info(f"Jobs scheduled for start at {POLL_START_TIME} and end at {POLL_END_TIME} KZT.")
 
+        # --- FIX: Start the scheduler manually for webhook mode ---
+        job_queue.start()
+        logger.info("JobQueue scheduler started successfully.")
+    else:
+        logger.error("JobQueue could not be initialized. Please ensure 'python-telegram-bot[job-queue]' is installed.")
+        # If job_queue is None, the application cannot run scheduled tasks.
 
-    # Register handlers
+    # 4. Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("results", results_command))
-    # Removed manual /poll command
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    # --- Start Webhook ---
+    # 5. Start Webhook
     webhook_url = f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}"
     
     application.run_webhook(
