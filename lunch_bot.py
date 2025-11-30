@@ -12,13 +12,13 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJs
 # NOTE: Target Chat ID must be an integer (e.g., -1001234567890).
 TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003232384383")
 
-# --- Time Constants (Kazakhstan Time Zone - UTC+6) ---
-KAZAKHSTAN_TZ = timezone(timedelta(hours=6))
+# --- Time Constants (Kazakhstan Time Zone - UTC+5) ---
+KAZAKHSTAN_TZ = timezone(timedelta(hours=5))
 
 # !!! TEMPORARY TEST TIMES AS REQUESTED: 01:30 AM KZT to 01:40 AM KZT !!!
 # Remember to change these back to 08:00 and 10:30 after testing.
-POLL_START_TIME = time(1, 30, 0, tzinfo=KAZAKHSTAN_TZ)   # Poll starts at 01:30 AM KZT (TIME WITH TZINFO)
-POLL_END_TIME = time(1, 40, 0, tzinfo=KAZAKHSTAN_TZ) # Poll closes at 01:40 AM KZT (TIME WITH TZINFO)
+POLL_START_TIME = time(1, 38, 0, tzinfo=KAZAKHSTAN_TZ)   # Poll starts at 01:37 AM KZT (TIME WITH TZINFO)
+POLL_END_TIME = time(1, 42, 0, tzinfo=KAZAKHSTAN_TZ) # Poll closes at 01:41 AM KZT (TIME WITH TZINFO)
 
 # --- RENDER ENVIRONMENT VARS ---
 PORT = int(os.environ.get("PORT", 8080))
