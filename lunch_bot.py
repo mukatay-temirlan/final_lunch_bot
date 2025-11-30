@@ -1,9 +1,9 @@
 import logging
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, User
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import time, timedelta, timezone
-import json # Added for temporary data storage
+import json 
 
 # --- Configuration (MUST BE SET) ---
 # 1. BOT TOKEN: Loaded from Render Environment Variable (Secret).
@@ -71,9 +71,9 @@ def save_state():
 
 # --- Utility Functions ---
 
-def get_voter_name(update: Update) -> str:
-    """Returns the voter's full name."""
-    user = update.effective_user
+def get_voter_name(user: User) -> str:
+    """Returns the voter's full name from a Telegram User object."""
+    # FIX: This function now accepts the User object directly to avoid the effective_user crash
     if user.last_name:
         return f"{user.first_name} {user.last_name}"
     return user.first_name
@@ -209,8 +209,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(text=POLL_INACTIVE_ALERT, show_alert=True)
         return
 
-    user_id = query.from_user.id
-    user_name = get_voter_name(query)
+    # FIX: Get user directly from query.from_user
+    user = query.from_user
+    user_id = user.id
+    user_name = get_voter_name(user) # Pass the User object
+
     vote_type = query.data # 'vote_yes' or 'vote_no'
     
     # Check current vote state and update lists
