@@ -7,7 +7,7 @@ import json
 
 # --- Configuration (MUST BE SET) ---
 # 1. BOT TOKEN: Loaded from Render Environment Variable (Secret).
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJschVpfWU") 
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJschpfWU") 
 # 2. TARGET CHAT ID: REPLACE WITH YOUR GROUP/CHAT ID (e.g., -1001234567890)
 # NOTE: Target Chat ID must be an integer (e.g., -1001234567890).
 TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003232384383")
@@ -39,6 +39,7 @@ POLL_ENDED_ANNOUNCEMENT = "🛑 *Дауыс беру аяқталды!* 🛑\n\n
 POLL_INACTIVE_ALERT = "Бұл дауыс беру аяқталды немесе белсенді емес."
 POLL_ENDED_BY_TIME = "Дауыс беру уақыты аяқталды (10:30)."
 VOTE_REGISTERED_ALERT = "Сіздің дауысыңыз тіркелді. Рахмет!" 
+VOTE_CHANGED_ALERT = "Сіздің дауысыңыз өзгертілді. Рахмет!" # New alert for changed vote
 RESULTS_HEADER = "📋 *Түскі Ас Дауыс Беру Нәтижелері* 📋\n\n"
 NOT_ACTIVE_MESSAGE = "Дауыс беру қазір белсенді емес. Келесі дауыс беруді сағат 08:00-де күтіңіз." 
 ONLY_IN_TARGET_CHAT = "Бұл пәрменді тек тағайындалған топта ғана қолдануға болады."
@@ -360,6 +361,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles button clicks (Yes/No votes and Results button)."""
     query = update.callback_query
     
+    # CRITICAL FIX 1: Reload state before processing ANY callback to ensure up-to-date data
+    # This helps resolve the issue where state is stale immediately after a vote.
     load_state() 
     user = query.from_user
     user_id = user.id
@@ -367,7 +370,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Results Button Logic (show_results) ---
     if query.data == 'show_results':
         
-        # FIX: Check for voting status by consulting the currently loaded poll_state
+        # Check 1: Voter-Only Access
         has_voted = user_id in poll_state['yes_voters'] or user_id in poll_state['no_voters']
         
         if not has_voted:
@@ -375,17 +378,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(text=VOTER_ONLY_ALERT, show_alert=True)
             return
             
-        # If the user has voted, show the results regardless of the poll's active state or time.
-        
         results_text = format_results_message()
-        # Strip Markdown for clean display in Telegram Alert window (show_alert=True)
-        # Replacing '*' and '_' and converting multiple newlines to single newlines for readability.
         plain_results_text = results_text.replace('*', '').replace('_', '').replace('\n\n', '\n').strip()
         
         alert_content = f"{RESULTS_IN_ALERT_HEADER}\n\n{plain_results_text}"
         
-        # Display the results in a modal alert (allows scrolling for long lists)
-        # The answer must be immediate to prevent the "Loading" state
         await query.answer(text=alert_content, show_alert=True)
         return
 
@@ -405,32 +402,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_name = get_voter_name(user) 
     vote_type = query.data # 'vote_yes' or 'vote_no'
+    vote_changed = False # Flag to determine the confirmation message
+
+    # --- IMPLEMENTATION OF "LAST VOTE COUNTS" ---
     
-    # Check current vote state and update lists
     if vote_type == 'vote_yes':
-        # Check for existing vote before modifying
+        # Check if the user is changing their NO vote to YES
+        if user_id in poll_state['no_voters']:
+            poll_state['no_voters'].pop(user_id) # Remove old NO vote
+            vote_changed = True
+        
+        # Check if they already voted YES
         if user_id in poll_state['yes_voters']:
             await query.answer(text=f"Сіздің дауысыңыз *Иә* болып тіркелген.", show_alert=False) 
-            return
-        
+            return # Exit if vote is the same
+            
         poll_state['yes_voters'][user_id] = user_name
-        poll_state['no_voters'].pop(user_id, None) 
         
     elif vote_type == 'vote_no':
-        # Check for existing vote before modifying
+        # Check if the user is changing their YES vote to NO
+        if user_id in poll_state['yes_voters']:
+            poll_state['yes_voters'].pop(user_id) # Remove old YES vote
+            vote_changed = True
+        
+        # Check if they already voted NO
         if user_id in poll_state['no_voters']:
             await query.answer(text=f"Сіздің дауысыңыз *Жоқ* болып тіркелген.", show_alert=False)
-            return
+            return # Exit if vote is the same
             
         poll_state['no_voters'][user_id] = user_name
-        poll_state['yes_voters'].pop(user_id, None) 
 
-    # Save state immediately after voting
+    # Save state immediately after voting/changing
     save_state()
     
+    # CRITICAL FIX 2: Reload state immediately after saving. 
+    # This ensures that the state used for the NEXT callback (i.e., the 'show_results' button press) 
+    # is the absolutely most recent version, solving the "you should vote" issue.
+    # We load state again, even though we just saved it, to ensure the next incoming callback 
+    # which might execute almost immediately (like the results button click) finds the data in the global memory/file.
+    load_state() 
+    
     # Confirmation toast for successful vote (2 seconds)
-    # The 'answer' must be the last action for a vote callback
-    await query.answer(text=VOTE_REGISTERED_ALERT, show_alert=False)
+    confirmation_message = VOTE_CHANGED_ALERT if vote_changed else VOTE_REGISTERED_ALERT
+    await query.answer(text=confirmation_message, show_alert=False)
 
 
 # --- Application Initialization (Webhook Mode) ---
