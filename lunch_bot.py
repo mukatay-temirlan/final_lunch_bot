@@ -366,6 +366,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check current vote state and update lists
     if vote_type == 'vote_yes':
         if user_id in poll_state['yes_voters']:
+            # Use show_alert=False for a temporary toast notification
             await query.answer(text=f"Сіздің дауысыңыз *{YES_OPTION}* болып тіркелген.", show_alert=False) 
             return
         
@@ -374,6 +375,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif vote_type == 'vote_no':
         if user_id in poll_state['no_voters']:
+            # Use show_alert=False for a temporary toast notification
             await query.answer(text=f"Сіздің дауысыңыз *{NO_OPTION}* болып тіркелген.", show_alert=False)
             return
             
@@ -381,7 +383,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         poll_state['yes_voters'].pop(user_id, None) 
 
     save_state()
-    # 2) When users click yes or no, there should be a notification like your response has been recorded
+    # This line uses show_alert=False, which displays a toast notification 
+    # that automatically disappears after about 2 seconds, as requested.
     await query.answer(text=VOTE_REGISTERED_ALERT, show_alert=False)
 
 
