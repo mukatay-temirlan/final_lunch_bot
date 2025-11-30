@@ -30,7 +30,8 @@ WELCOME_MESSAGE = (
     "Бұл бот Webhook режимінде жұмыс істейді.\n\n"
     "**Дауыс беру уақыты: 08:00 - 10:30 (Астана уақыты).**\n"
     "Дауыс беру *автоматты түрде* сағат 08:00-де басталып, 10:30-да нәтижелерді жариялаумен аяқталады.\n\n"
-    "Ағымдағы нәтижелерді көру үшін `/results` пәрменін пайдаланыңыз."
+    "Ағымдағы нәтижелерді көру үшін `/results` пәрменін пайдаланыңыз.\n"
+    "*Әкімшілер қолмен бастау үшін `/poll` пәрменін қолдана алады.*"
 )
 POLL_STARTED = "📢 *Дауыс беру басталды!* 📢\n\n"
 POLL_ENDED_ANNOUNCEMENT = "🛑 *Дауыс беру аяқталды!* 🛑\n\n"
@@ -40,6 +41,9 @@ VOTE_REGISTERED_ALERT = "Сіздің дауысыңыз тіркелді. Ра�
 RESULTS_HEADER = "📋 *Түскі Ас Дауыс Беру Нәтижелері* 📋\n\n"
 NOT_ACTIVE_MESSAGE = "Дауыс беру қазір белсенді емес. Келесі дауыс беруді сағат 08:00-де күтіңіз." 
 ONLY_IN_TARGET_CHAT = "Бұл пәрменді тек тағайындалған топта ғана қолдануға болады."
+# New strings for manual poll feature
+MANUAL_POLL_STARTED = "✅ *Дауыс беру қолмен іске қосылды.*"
+NOT_ADMIN_MESSAGE = "❌ Бұл әрекетті орындауға сіздің әкімші құқығыңыз жоқ."
 
 # Global variable to hold the integer chat ID, initialized in main()
 TARGET_CHAT_ID = None 
@@ -167,7 +171,7 @@ def check_and_expire_poll() -> bool:
 # --- Scheduled Job Functions ---
 
 async def start_poll_job(context: CallbackContext):
-    """Starts the poll automatically at 08:00 AM KZT."""
+    """Starts the poll automatically at 08:00 AM KZT or when manually triggered."""
     global poll_state
     
     load_state() 
@@ -180,9 +184,10 @@ async def start_poll_job(context: CallbackContext):
     now_kz = datetime.now(KAZAKHSTAN_TZ)
     lunch_date_str = now_kz.strftime('%Y-%m-%d')
     
-    logger.info(f"Scheduled start job triggered for {lunch_date_str}.")
+    logger.info(f"Start job triggered for {lunch_date_str}.")
 
     if poll_state['is_active'] and poll_state['lunch_date'] == lunch_date_str:
+        # This check is mainly for the scheduled job, but harmless for manual trigger if state is checked beforehand
         logger.info("Poll already active for today. Skipping start.")
         return
         
@@ -212,10 +217,10 @@ async def start_poll_job(context: CallbackContext):
         )
         poll_state['poll_message_id'] = message.message_id
         save_state()
-        logger.info(f"New automated poll started for {lunch_date_str}.")
+        logger.info(f"New poll started for {lunch_date_str}.")
 
     except Exception as e:
-        logger.error(f"Error starting automated poll: {e}. Ensuring state is inactive.")
+        logger.error(f"Error starting poll: {e}. Ensuring state is inactive.")
         poll_state['is_active'] = False
         save_state()
 
@@ -292,8 +297,45 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     results = format_results_message()
     await update.message.reply_text(results, parse_mode='Markdown')
-        
 
+async def manual_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Allows group administrators to manually start the poll using /poll.
+    """
+    load_state()
+
+    # Check 1: Must be in the target group
+    target_chat_id = poll_state.get('target_chat_id')
+    if update.effective_chat.id != target_chat_id:
+        await update.message.reply_text(ONLY_IN_TARGET_CHAT)
+        return
+
+    user = update.effective_user
+    
+    try:
+        # Check 2: Must be an administrator or creator of the chat
+        chat_member = await context.bot.get_chat_member(target_chat_id, user.id)
+        
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text(NOT_ADMIN_MESSAGE)
+            return
+
+        # Check 3: Only allow manual poll if no poll is currently active for today
+        now_kz = datetime.now(KAZAKHSTAN_TZ)
+        today_date_str = now_kz.strftime('%Y-%m-%d')
+        
+        if poll_state['is_active'] and poll_state['lunch_date'] == today_date_str:
+            await update.message.reply_text("❌ *Қате:* Бүгінгі күнге арналған дауыс беру қазірдің өзінде белсенді.", parse_mode='Markdown')
+            return
+
+        # Start the poll immediately (reusing start_poll_job logic)
+        await start_poll_job(context)
+        await update.message.reply_text(MANUAL_POLL_STARTED, parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Error checking admin status or starting manual poll: {e}")
+        await update.message.reply_text("❌ Қолмен дауыс беруді бастау кезінде қате пайда болды.")
+        
 # --- Callback Query Handler (Button Clicks) ---
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -373,24 +415,25 @@ def main():
     load_state()
 
     # 2. Create the Application and JobQueue
-    application = Application.builder().token(BOT_TOKEN).build()
+    # FIX: Set the timezone on the Application builder itself (for PTB 20.0+)
+    application = Application.builder().token(BOT_TOKEN).tzinfo(KAZAKHSTAN_TZ).build()
     job_queue = application.job_queue
 
-    # 3. Schedule and Start JobQueue (FIX)
+    # 3. Schedule and Start JobQueue 
     if job_queue:
+        # FIX: Removed the 'tzinfo' argument from run_daily, as it's now set on the Application
         job_queue.run_daily(
             start_poll_job, 
             POLL_START_TIME, 
             days=(0, 1, 2, 3, 4, 5, 6),
-            tzinfo=KAZAKHSTAN_TZ,
             name='daily_poll_start'
         )
         
+        # FIX: Removed the 'tzinfo' argument from run_daily
         job_queue.run_daily(
             end_poll_job, 
             POLL_END_TIME, 
             days=(0, 1, 2, 3, 4, 5, 6),
-            tzinfo=KAZAKHSTAN_TZ,
             name='daily_poll_end'
         )
         
@@ -406,6 +449,8 @@ def main():
     # 4. Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("results", results_command))
+    # NEW: Handler for manual poll command with admin check
+    application.add_handler(CommandHandler("poll", manual_poll_command)) 
     application.add_handler(CallbackQueryHandler(button_handler))
 
     # 5. Start Webhook
