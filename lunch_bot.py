@@ -12,13 +12,15 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJs
 # NOTE: Target Chat ID must be an integer (e.g., -1001234567890).
 TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003232384383")
 
-# --- Time Constants (Kazakhstan Time Zone - UTC+5) ---
-KAZAKHSTAN_TZ = timezone(timedelta(hours=5))
+# --- Time Constants (GMT+5/UTC+5 Time Zone) ---
+KAZAKHSTAN_TZ = timezone(timedelta(hours=5)) # UTC+5 Time Zone
 
-# !!! TEMPORARY TEST TIMES AS REQUESTED: 01:30 AM KZT to 01:40 AM KZT !!!
-# Remember to change these back to 08:00 and 10:30 after testing.
-POLL_START_TIME = time(1, 38, 0, tzinfo=KAZAKHSTAN_TZ)   # Poll starts at 01:37 AM KZT (TIME WITH TZINFO)
-POLL_END_TIME = time(1, 42, 0, tzinfo=KAZAKHSTAN_TZ) # Poll closes at 01:41 AM KZT (TIME WITH TZINFO)
+# 1. UPDATED SCHEDULED TIMES
+POLL_START_TIME = time(8, 0, 0, tzinfo=KAZAKHSTAN_TZ)   # Poll starts at 08:00 AM UTC+5
+POLL_END_TIME = time(10, 30, 0, tzinfo=KAZAKHSTAN_TZ) # Poll closes at 10:30 AM UTC+5
+
+# 2. MANUAL POLL LOCKOUT TIME
+MANUAL_POLL_LOCKOUT_TIME = time(16, 0, 0, tzinfo=KAZAKHSTAN_TZ) # 04:00 PM UTC+5
 
 # --- RENDER ENVIRONMENT VARS ---
 PORT = int(os.environ.get("PORT", 8080))
@@ -32,9 +34,10 @@ NO_OPTION = "🔴 Жоқ"
 WELCOME_MESSAGE = (
     "🤖 *Түскі Ас Ботқа Қош Келдіңіз!* 🤖\n\n"
     "Бұл бот Webhook режимінде жұмыс істейді.\n\n"
-    f"**Дауыс беру уақыты: {POLL_START_TIME.strftime('%H:%M')} - {POLL_END_TIME.strftime('%H:%M')} (Астана уақыты).**\n"
+    f"**Дауыс беру уақыты: {POLL_START_TIME.strftime('%H:%M')} - {POLL_END_TIME.strftime('%H:%M')} (UTC+5 уақыты).**\n"
     "Дауыс беру *автоматты түрде* басталып, нәтижелерді жариялаумен аяқталады.\n\n"
     "Ағымдағы нәтижелерді көру үшін `/results` пәрменін пайдаланыңыз.\n"
+    "Өткен күндердегі нәтижелерді көру үшін: `/history YYYY-MM-DD`.\n" # Added history command info
     "*Әкімшілер қолмен бастау үшін `/poll` пәрменін қолдана алады.*"
 )
 POLL_STARTED = "📢 *Дауыс беру басталды!* 📢\n\n"
@@ -52,7 +55,11 @@ NOT_ADMIN_MESSAGE = "❌ Бұл әрекетті орындауға сіздің
 # New strings for Results button feature
 RESULTS_BUTTON = "🔵 Нәтижелерді көру"
 VOTER_ONLY_ALERT = "❌ Нәтижелерді көру үшін алдымен дауыс беріңіз."
-RESULTS_IN_ALERT_HEADER = "📋 Түскі Ас Дауыс Беру Нәтижелері"
+RESULTS_IN_ALERT_HEADER = "📋 Түскі Ас Дауыс Беру Нәтижелері (Ағымдағы)"
+# New string for poll lockout
+MANUAL_POLL_LOCKED_MESSAGE = f"❌ *Қолмен дауыс беруді бастау мүмкін емес.*\n\nБүгінгі түскі асқа арналған дауыс беру автоматты түрде басталды. Кешкі асқа дауыс беруді бастау үшін сағат {MANUAL_POLL_LOCKOUT_TIME.strftime('%H:%M')} (UTC+5 уақыты)-ден кейін қайталаңыз."
+PAST_POLLS_FILE = "past_polls.json"
+HISTORY_NOT_FOUND = "❌ Бұл күнге арналған дауыс беру нәтижелері табылған жоқ. Күнді `YYYY-MM-DD` форматында тексеріңіз, немесе `/history` пәрменін ғана қолданыңыз."
 
 
 # Global variable to hold the integer chat ID, initialized in main()
@@ -119,6 +126,40 @@ def save_state():
             json.dump(state_to_save, f, indent=4)
     except Exception as e:
         logger.error(f"Error saving state: {e}")
+        
+def load_past_polls():
+    """Loads all past poll data for history feature."""
+    try:
+        with open(PAST_POLLS_FILE, 'r') as f:
+            data = json.load(f)
+            # Ensure voter IDs are converted back to integers for consistency if needed later
+            archived_polls = {}
+            for date, poll in data.items():
+                poll['yes_voters'] = {int(k): v for k, v in poll.get('yes_voters', {}).items()}
+                poll['no_voters'] = {int(k): v for k, v in poll.get('no_voters', {}).items()}
+                archived_polls[date] = poll
+            return archived_polls
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_past_polls(data):
+    """Saves all past poll data for history feature."""
+    try:
+        # Prepare data for saving (convert integer keys back to strings)
+        state_to_save = {}
+        for date, poll in data.items():
+            state_to_save[date] = {
+                'yes_voters': {str(k): v for k, v in poll.get('yes_voters', {}).items()},
+                'no_voters': {str(k): v for k, v in poll.get('no_voters', {}).items()},
+                'end_time': poll.get('end_time'),
+                'status': poll.get('status')
+            }
+            
+        with open(PAST_POLLS_FILE, 'w') as f:
+            json.dump(state_to_save, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving past poll data: {e}")
+
 
 # --- Utility Functions ---
 
@@ -142,28 +183,29 @@ def create_poll_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def format_results_message():
-    """Generates the formatted results string."""
+def format_results_message(state_to_format=None):
+    """Generates the formatted results string based on the provided state or current poll_state."""
+    state = state_to_format if state_to_format is not None else poll_state
+    
     # Use the original, non-emoji names for display
     clean_yes_option = "Иә"
     clean_no_option = "Жоқ"
     
-    # NOTE: poll_state['yes_voters'] and ['no_voters'] values are user names (strings)
-    yes_list = "\n- " + "\n- ".join(poll_state['yes_voters'].values()) if poll_state['yes_voters'] else "Ешкім дауыс бермеді"
-    no_list = "\n- " + "\n- ".join(poll_state['no_voters'].values()) if poll_state['no_voters'] else "Ешкім дауыс бермеді"
+    # NOTE: state['yes_voters'] and ['no_voters'] values are user names (strings)
+    yes_list = "\n- " + "\n- ".join(state['yes_voters'].values()) if state['yes_voters'] else "Ешкім дауыс бермеді"
+    no_list = "\n- " + "\n- ".join(state['no_voters'].values()) if state['no_voters'] else "Ешкім дауыс бермеді"
     
-    total_votes = len(poll_state['yes_voters']) + len(poll_state['no_voters'])
+    total_votes = len(state['yes_voters']) + len(state['no_voters'])
     
     # Only include Date
-    date_info = f"📅 Күні: *{poll_state['lunch_date']}*" if poll_state['lunch_date'] else "📅 Күні: *Белгісіз*"
+    date_info = f"📅 Күні: *{state['lunch_date']}*" if state['lunch_date'] else "📅 Күні: *Белгісіз*"
     
     message = (
-        f"{RESULTS_HEADER}"
         f"{date_info}\n\n"
         f"Сұрақ: _{POLL_QUESTION}_\n\n"
-        f"✅ *{clean_yes_option}* ({len(poll_state['yes_voters'])}):\n"
+        f"✅ *{clean_yes_option}* ({len(state['yes_voters'])}):\n"
         f"{yes_list}\n\n"
-        f"❌ *{clean_no_option}* ({len(poll_state['no_voters'])}):\n"
+        f"❌ *{clean_no_option}* ({len(state['no_voters'])}):\n"
         f"{no_list}\n\n"
         f"Барлығы дауыс берді: *{total_votes}*"
     )
@@ -172,17 +214,14 @@ def format_results_message():
 def check_and_expire_poll() -> bool:
     """
     Checks if the poll is currently expired based on the set lunch date and KZT time.
-    If expired, it sets is_active to False and saves state.
+    If expired, it sets is_active to False, saves state, and archives results.
     Returns True if the poll was active and is now expired, False otherwise.
     """
     if not poll_state['is_active'] or not poll_state['lunch_date']:
         return False
 
     try:
-        # 1. Get current date/time in Kazakhstan time
         now_kz = datetime.now(KAZAKHSTAN_TZ)
-        
-        # 2. Convert poll date string to a date object
         poll_date_dt = datetime.strptime(poll_state['lunch_date'], '%Y-%m-%d').date()
 
         # Check if today is the lunch day and time is past POLL_END_TIME (excluding tzinfo for comparison), 
@@ -191,6 +230,19 @@ def check_and_expire_poll() -> bool:
 
         if is_past_end_time:
             poll_state['is_active'] = False
+            
+            # --- ARCHIVE RESULTS ---
+            archivable_data = {
+                'yes_voters': poll_state['yes_voters'],
+                'no_voters': poll_state['no_voters'],
+                'end_time': now_kz.isoformat(),
+                'status': 'Completed_AutoExpired'
+            }
+            past_polls = load_past_polls()
+            past_polls[poll_state['lunch_date']] = archivable_data
+            save_past_polls(past_polls)
+            # -----------------------
+
             save_state()
             logger.info(f"Poll for {poll_state['lunch_date']} automatically expired by check at {now_kz.time()}.")
             return True
@@ -256,6 +308,13 @@ async def start_poll_job(context: CallbackContext, force_restart=False):
         )
         poll_state['poll_message_id'] = message.message_id
         save_state()
+        if force_restart:
+             # Only send the success message if it was a manual command
+            await context.bot.send_message(
+                chat_id=poll_state['target_chat_id'], 
+                text=MANUAL_POLL_STARTED, 
+                parse_mode='Markdown'
+            )
         logger.info(f"New poll started (or restarted) for {lunch_date_str}.")
 
     except Exception as e:
@@ -288,6 +347,19 @@ async def end_poll_job(context: CallbackContext):
 
         final_results = format_results_message()
         
+        # --- ARCHIVE RESULTS ---
+        archivable_data = {
+            'yes_voters': poll_state['yes_voters'],
+            'no_voters': poll_state['no_voters'],
+            'end_time': now_kz.isoformat(),
+            'status': 'Completed_Scheduled'
+        }
+        past_polls = load_past_polls()
+        # Note: If poll was ended manually, it overwrites the auto-expired status if any
+        past_polls[today_date_str] = archivable_data 
+        save_past_polls(past_polls)
+        # -----------------------
+
         # Announce results
         try:
             await context.bot.send_message(
@@ -311,7 +383,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Sends the current voting results. 
+    Sends the current voting results. Available to all users.
     """
     load_state() 
     
@@ -336,11 +408,48 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     results = format_results_message()
-    await update.message.reply_text(results, parse_mode='Markdown')
+    await update.message.reply_text(f"{RESULTS_HEADER}{results}", parse_mode='Markdown')
+
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Retrieves and sends the voting results for a specific past date.
+    Usage: /history [YYYY-MM-DD] (defaults to yesterday if no date is given)
+    """
+    load_state()
+    
+    if not context.args:
+        # Default to previous day if no date is specified
+        yesterday_kz = datetime.now(KAZAKHSTAN_TZ) - timedelta(days=1)
+        target_date_str = yesterday_kz.strftime('%Y-%m-%d')
+        
+    else:
+        target_date_str = context.args[0]
+        
+    past_polls = load_past_polls()
+    
+    if target_date_str in past_polls:
+        # Temporarily use the archived data structure to format the message
+        archived_poll = past_polls[target_date_str]
+        temp_state = {
+            'yes_voters': archived_poll['yes_voters'],
+            'no_voters': archived_poll['no_voters'],
+            'lunch_date': target_date_str
+        }
+        
+        results = format_results_message(temp_state) 
+        
+        await update.message.reply_text(
+            f"🕰️ *Өткен Дауыс Беру Нәтижелері* ({target_date_str})\n\n{RESULTS_HEADER}{results}", 
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(HISTORY_NOT_FOUND)
 
 async def manual_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Allows group administrators to manually start/restart the poll using /poll, clearing old votes.
+    (Admin-only and locked before 4 PM if daily poll started)
     """
     load_state()
 
@@ -359,10 +468,19 @@ async def manual_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         if chat_member.status not in ['administrator', 'creator']:
             await update.message.reply_text(NOT_ADMIN_MESSAGE)
             return
+        
+        # Check 3: Manual Poll Time/Activity Restriction (New requirement)
+        now_kz = datetime.now(KAZAKHSTAN_TZ)
+        lunch_date_str = now_kz.strftime('%Y-%m-%d')
+        is_active_for_today = poll_state['is_active'] and poll_state['lunch_date'] == lunch_date_str
+        
+        if is_active_for_today and now_kz.time() < MANUAL_POLL_LOCKOUT_TIME.replace(tzinfo=None):
+            await update.message.reply_text(MANUAL_POLL_LOCKED_MESSAGE, parse_mode='Markdown')
+            return
 
-        # Start the poll immediately, forcing a full state reset (including existing active poll for today)
+        # Start the poll immediately, forcing a full state reset
         await start_poll_job(context, force_restart=True)
-        await update.message.reply_text(MANUAL_POLL_STARTED, parse_mode='Markdown')
+        # Note: The success message is now handled inside start_poll_job if force_restart is True
 
     except Exception as e:
         logger.error(f"Error checking admin status or starting manual poll: {e}")
@@ -390,10 +508,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(text=VOTER_ONLY_ALERT, show_alert=True)
             return
             
+        # Get the full, current results
         results_text = format_results_message()
-        # Clean up Markdown characters for the plain text alert display
-        plain_results_text = results_text.replace('*', '').replace('_', '').replace('\n\n', '\n').strip()
         
+        # Clean up Markdown characters for the plain text alert display, keeping list structure
+        # Replace Markdown list markers with standard formatting for alert box
+        plain_results_text = results_text.replace('*', '').replace('_', '').replace('📅 Күні:', 'Күні:')
+        
+        # Better formatting for the list items in the alert box
         alert_content = f"{RESULTS_IN_ALERT_HEADER}\n\n{plain_results_text}"
         
         await query.answer(text=alert_content, show_alert=True)
@@ -474,7 +596,7 @@ def main():
          return
 
     try:
-        # Ensure TARGET_CHAT_ID is set globally as an integer from the environment
+        # Ensure TARGET_CHAT ID is set globally as an integer from the environment
         TARGET_CHAT_ID = int(TARGET_CHAT_ID_RAW)
         # Update poll_state with the validated integer chat ID
         poll_state['target_chat_id'] = TARGET_CHAT_ID 
@@ -485,11 +607,12 @@ def main():
     # Load any potentially saved state (unreliable on free tier but necessary)
     load_state()
 
-    # 2. Create the Application and JobQueue
+    # 2. Create the Application
     application = Application.builder().token(BOT_TOKEN).build()
     job_queue = application.job_queue
 
     # 3. Schedule and Start JobQueue 
+    # --- CHECK 1: Ensure JobQueue is available before trying to schedule jobs ---
     if job_queue:
         # The time objects (POLL_START_TIME, POLL_END_TIME) now contain tzinfo directly
         job_queue.run_daily(
@@ -506,17 +629,21 @@ def main():
             name='daily_poll_end'
         )
         
-        logger.info(f"Jobs scheduled for start at {POLL_START_TIME.strftime('%H:%M')} and end at {POLL_END_TIME.strftime('%H:%M')} KZT.")
+        logger.info(f"Jobs scheduled for start at {POLL_START_TIME.strftime('%H:%M')} and end at {POLL_END_TIME.strftime('%H:%M')} UTC+5.")
 
         # --- Start the scheduler manually for webhook mode ---
         job_queue.start()
         logger.info("JobQueue scheduler started successfully.")
     else:
-        logger.error("JobQueue could not be initialized. Please ensure 'python-telegram-bot[job-queue]' is installed.")
+        # This logging is now crucial since the fatal crash happens here
+        logger.error("FATAL ERROR: JobQueue could not be initialized. Please ensure 'python-telegram-bot[job-queue]' is installed.")
+        # We continue execution without the scheduled jobs, but the bot will still respond to commands.
 
     # 4. Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("results", results_command))
+    # New history command
+    application.add_handler(CommandHandler("history", history_command))
     # Handler for manual poll command with admin check
     application.add_handler(CommandHandler("poll", manual_poll_command)) 
     application.add_handler(CallbackQueryHandler(button_handler))
