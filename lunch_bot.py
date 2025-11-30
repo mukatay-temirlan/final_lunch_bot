@@ -7,9 +7,9 @@ import json # Added for temporary data storage
 
 # --- Configuration (MUST BE SET) ---
 # 1. BOT TOKEN: Loaded from Render Environment Variable (Secret).
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE") 
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJschVpfWU") 
 # 2. TARGET CHAT ID: REPLACE WITH YOUR GROUP/CHAT ID (e.g., -1001234567890)
-TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID", "YOUR_TARGET_CHAT_ID_HERE") 
+TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID", "-1003232384383") 
 # 3. RENDER ENVIRONMENT VARS
 PORT = int(os.environ.get("PORT", 8080))
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "YOUR_RENDER_URL_HERE") # e.g., https://my-bot-service.onrender.com
