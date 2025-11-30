@@ -44,6 +44,11 @@ ONLY_IN_TARGET_CHAT = "Бұл пәрменді тек тағайындалған
 # New strings for manual poll feature
 MANUAL_POLL_STARTED = "✅ *Дауыс беру қолмен іске қосылды.*"
 NOT_ADMIN_MESSAGE = "❌ Бұл әрекетті орындауға сіздің әкімші құқығыңыз жоқ."
+# New strings for Results button feature
+RESULTS_BUTTON = "Нәтижелерді көру"
+VOTER_ONLY_ALERT = "❌ Нәтижелерді көру үшін алдымен дауыс беріңіз."
+RESULTS_IN_ALERT_HEADER = "📋 Түскі Ас Дауыс Беру Нәтижелері"
+
 
 # Global variable to hold the integer chat ID, initialized in main()
 TARGET_CHAT_ID = None 
@@ -104,11 +109,15 @@ def get_voter_name(user: User) -> str:
     return user.first_name
 
 def create_poll_keyboard():
-    """Generates the inline keyboard for the poll."""
+    """Generates the inline keyboard for the poll, including the Results button."""
     keyboard = [
         [
             InlineKeyboardButton(YES_OPTION, callback_data='vote_yes'),
             InlineKeyboardButton(NO_OPTION, callback_data='vote_no'),
+        ],
+        [
+            # This button is always present, but its functionality is restricted to voters
+            InlineKeyboardButton(RESULTS_BUTTON, callback_data='show_results'),
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -212,7 +221,7 @@ async def start_poll_job(context: CallbackContext):
         message = await context.bot.send_message(
             chat_id=poll_state['target_chat_id'],
             text=full_poll_text,
-            reply_markup=create_poll_keyboard(),
+            reply_markup=create_poll_keyboard(), # Now includes Results button
             parse_mode='Markdown'
         )
         poll_state['poll_message_id'] = message.message_id
@@ -271,7 +280,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(WELCOME_MESSAGE, parse_mode='Markdown')
 
 async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends the current voting results."""
+    """
+    Sends the current voting results. 
+    This is kept mainly for private chat use or when the poll message is scrolled away.
+    """
     load_state() 
     
     # If the global TARGET_CHAT_ID wasn't set (e.g., initial run), fall back to global constant for comparison
@@ -286,6 +298,7 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     # Check 2: Automatic Expiry Check
+    # This ensures that if it's past 10:30, the poll is marked inactive before showing results.
     is_expired = check_and_expire_poll()
     if is_expired:
         await update.message.reply_text(f"{POLL_ENDED_ANNOUNCEMENT}{format_results_message()}", parse_mode='Markdown')
@@ -339,34 +352,57 @@ async def manual_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 # --- Callback Query Handler (Button Clicks) ---
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles button clicks (Yes/No votes)."""
+    """Handles button clicks (Yes/No votes and Results button)."""
     query = update.callback_query
-    await query.answer() # Immediately answer the callback query to remove the loading state
-
+    
     load_state() 
+    user = query.from_user
+    user_id = user.id
 
-    # Check 1: Automatic Expiry Check
+    # --- Results Button Logic ---
+    if query.data == 'show_results':
+        
+        # Check 1: Voter-Only Access (Priority 1)
+        has_voted = user_id in poll_state['yes_voters'] or user_id in poll_state['no_voters']
+        
+        if not has_voted:
+            # Send alert for non-voters
+            await query.answer(text=VOTER_ONLY_ALERT, show_alert=True)
+            return
+            
+        # If the user has voted, show the results regardless of the poll's active state or time.
+        
+        results_text = format_results_message()
+        # Strip Markdown for clean display in Telegram Alert window (show_alert=True)
+        # Replacing '*' and '_' and converting multiple newlines to single newlines for readability.
+        plain_results_text = results_text.replace('*', '').replace('_', '').replace('\n\n', '\n').strip()
+        
+        alert_content = f"{RESULTS_IN_ALERT_HEADER}\n\n{plain_results_text}"
+        
+        # Display the results in a modal alert (allows scrolling for long lists)
+        await query.answer(text=alert_content, show_alert=True)
+        return
+
+    # --- Voting Logic (vote_yes/vote_no) ---
+    
+    # Check 2: Automatic Expiry Check (Crucial to block new votes after time is up)
     is_expired = check_and_expire_poll()
     if is_expired:
         # Send a failure alert and stop processing
         await query.answer(text=POLL_ENDED_BY_TIME, show_alert=True)
         return
 
-    # Check 2: Poll must be active
+    # Check 3: Poll must be active
     if not poll_state['is_active']:
         await query.answer(text=POLL_INACTIVE_ALERT, show_alert=True)
         return
 
-    user = query.from_user
-    user_id = user.id
     user_name = get_voter_name(user) 
-
     vote_type = query.data # 'vote_yes' or 'vote_no'
     
     # Check current vote state and update lists
     if vote_type == 'vote_yes':
         if user_id in poll_state['yes_voters']:
-            # Use show_alert=False for a temporary toast notification
             await query.answer(text=f"Сіздің дауысыңыз *{YES_OPTION}* болып тіркелген.", show_alert=False) 
             return
         
@@ -375,7 +411,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif vote_type == 'vote_no':
         if user_id in poll_state['no_voters']:
-            # Use show_alert=False for a temporary toast notification
             await query.answer(text=f"Сіздің дауысыңыз *{NO_OPTION}* болып тіркелген.", show_alert=False)
             return
             
@@ -383,8 +418,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         poll_state['yes_voters'].pop(user_id, None) 
 
     save_state()
-    # This line uses show_alert=False, which displays a toast notification 
-    # that automatically disappears after about 2 seconds, as requested.
+    # Confirmation toast for successful vote (2 seconds)
     await query.answer(text=VOTE_REGISTERED_ALERT, show_alert=False)
 
 
@@ -453,7 +487,7 @@ def main():
     # 4. Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("results", results_command))
-    # NEW: Handler for manual poll command with admin check
+    # Handler for manual poll command with admin check
     application.add_handler(CommandHandler("poll", manual_poll_command)) 
     application.add_handler(CallbackQueryHandler(button_handler))
 
