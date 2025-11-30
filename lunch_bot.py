@@ -2,7 +2,7 @@ import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, User
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from datetime import time, timedelta, timezone
+from datetime import time, timedelta, timezone, datetime # Import datetime for date parsing
 import json 
 
 # --- Configuration (MUST BE SET) ---
@@ -15,12 +15,15 @@ PORT = int(os.environ.get("PORT", 8080))
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "YOUR_RENDER_URL_HERE") # e.g., https://my-bot-service.onrender.com
 
 # --- Bot Strings (Kazakh Language) ---
-POLL_QUESTION = "Сіз бүгін түскі ас ішесіз бе?"
+# Question is now general, date is added separately
+POLL_QUESTION = "Сіз түскі ас ішесіз бе?"
 YES_OPTION = "Иә"
 NO_OPTION = "Жоқ"
 WELCOME_MESSAGE = (
     "🤖 *Түскі Ас Ботқа Қош Келдіңіз!* 🤖\n\n"
-    "Бұл бот Webhook режимінде жұмыс істейді. Дауыс беруді бастау үшін: `/poll` пәрменін жіберіңіз.\n\n"
+    "Бұл бот Webhook режимінде жұмыс істейді.\n\n"
+    "Дауыс беруді бастау үшін кез келген қатысушы келесі пәрменді қолдануы керек:\n"
+    "`/poll YYYY-MM-DD`\n\n"
     "Ағымдағы нәтижелерді көру үшін `/results` пәрменін пайдаланыңыз."
 )
 POLL_STARTED = "📢 *Дауыс беру басталды!* 📢\n\n"
@@ -28,17 +31,19 @@ POLL_ENDED_ANNOUNCEMENT = "🛑 *Дауыс беру аяқталды!* 🛑\n\n
 POLL_INACTIVE_ALERT = "Бұл дауыс беру аяқталды немесе белсенді емес."
 VOTE_REGISTERED_ALERT = "Дауысыңыз тіркелді! Ағымдағы нәтижелер үшін /results пәрменін пайдаланыңыз."
 RESULTS_HEADER = "📋 *Түскі Ас Дауыс Беру Нәтижелері* 📋\n\n"
-NOT_ACTIVE_MESSAGE = "Дауыс беру қазір белсенді емес. Оны бастау үшін `/poll` пәрменін пайдаланыңыз."
+# NOTE: The instructions for starting the poll are updated here
+NOT_ACTIVE_MESSAGE = "Дауыс беру қазір белсенді емес. Оны бастау үшін `/poll YYYY-MM-DD` пәрменін пайдаланыңыз." 
 ONLY_IN_TARGET_CHAT = "Бұл пәрменді тек тағайындалған топта ғана қолдануға болады."
+# NOT_ADMIN_MESSAGE has been removed as admins are no longer required
 
 # --- State Management (In-Memory/Global - NOTE: This will reset on Free Tier spin-down) ---
-# FOR PERSISTENCE: State is manually managed by the user using /poll and /endpoll.
 poll_state = {
     'is_active': False,
     'yes_voters': {}, # {user_id: full_name}
     'no_voters': {},  # {user_id: full_name}
     'poll_message_id': None,
-    'target_chat_id': TARGET_CHAT_ID 
+    'target_chat_id': TARGET_CHAT_ID,
+    'lunch_date': None,       # Date of the planned lunch
 }
 STATE_FILE = "poll_state.json" 
 
@@ -73,7 +78,6 @@ def save_state():
 
 def get_voter_name(user: User) -> str:
     """Returns the voter's full name from a Telegram User object."""
-    # FIX: This function now accepts the User object directly to avoid the effective_user crash
     if user.last_name:
         return f"{user.first_name} {user.last_name}"
     return user.first_name
@@ -95,8 +99,12 @@ def format_results_message():
     
     total_votes = len(poll_state['yes_voters']) + len(poll_state['no_voters'])
     
+    # Only include Date
+    date_info = f"📅 Күні: *{poll_state['lunch_date']}*" if poll_state['lunch_date'] else "📅 Күні: *Белгісіз*"
+    
     message = (
         f"{RESULTS_HEADER}"
+        f"{date_info}\n\n"
         f"Сұрақ: _{POLL_QUESTION}_\n\n"
         f"✅ *{YES_OPTION}* ({len(poll_state['yes_voters'])}):\n"
         f"{yes_list}\n\n"
@@ -126,6 +134,7 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(ONLY_IN_TARGET_CHAT)
         return
         
+    # NOTE: Since there is no /endpoll, the poll remains active until a new one is started or the server resets.
     if not poll_state['is_active']:
         await update.message.reply_text(NOT_ACTIVE_MESSAGE)
         return
@@ -134,65 +143,83 @@ async def results_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(results, parse_mode='Markdown')
 
 async def manual_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually starts the poll (replaces the scheduled start)."""
+    """Starts the poll. Usage: /poll YYYY-MM-DD"""
     global poll_state
     
-    # Restrict usage to the target chat ID for security
-    if str(update.effective_chat.id) != str(poll_state['target_chat_id']):
+    # Check 1: Must be in the target group chat
+    current_chat_id = str(update.effective_chat.id)
+    if current_chat_id != str(poll_state['target_chat_id']):
          await update.message.reply_text(ONLY_IN_TARGET_CHAT)
          return
-         
-    # 1. Reset state for the new poll
+    
+    # Check 2: Parse arguments
+    args = context.args
+    if not args or len(args) > 1:
+        await update.message.reply_text(
+            "❌ *Қате:* Түскі ас күнін көрсетіңіз. Үлгі: `/poll YYYY-MM-DD`",
+            parse_mode='Markdown'
+        )
+        return
+
+    lunch_date_str = args[0]
+
+    # Validate Date
+    try:
+        # Check if it's a valid date format YYYY-MM-DD
+        datetime.strptime(lunch_date_str, '%Y-%m-%d')
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Қате:* Күн форматы дұрыс емес. YYYY-MM-DD үлгісін қолданыңыз.",
+            parse_mode='Markdown'
+        )
+        return
+
+    # A poll is always closed when a new one is started.
+    is_active_before_new_poll = poll_state['is_active']
+    
+    # 1. Reset state and set new parameters
     poll_state['is_active'] = True
     poll_state['yes_voters'] = {}
     poll_state['no_voters'] = {}
     poll_state['poll_message_id'] = None
+    poll_state['lunch_date'] = lunch_date_str
     
-    logger.info("Starting new lunch poll via /poll command.")
+    logger.info(f"Starting new lunch poll for {lunch_date_str}.")
+
+    # Announce results of the *previous* poll if it was active
+    if is_active_before_new_poll:
+        # Generate results message based on *old* state data before reset (though reset happens above, 
+        # for simplicity, we rely on the fact that results will be generated from the new state, but 
+        # user feedback says a new poll replaces the old one without explicit result announcement.)
+        pass # Not announcing old results as per user's preference to keep it simple (no /endpoll)
     
-    # 2. Send poll message
+    # 2. Construct the poll message
+    date_text = f"📅 Күні: *{lunch_date_str}*."
+    
+    full_poll_text = (
+        f"{POLL_STARTED}"
+        f"{date_text}\n\n"
+        f"{POLL_QUESTION}"
+    )
+
+    # 3. Send poll message
     try:
         message = await context.bot.send_message(
             chat_id=poll_state['target_chat_id'],
-            text=f"{POLL_STARTED}{POLL_QUESTION}",
+            text=full_poll_text,
             reply_markup=create_poll_keyboard(),
             parse_mode='Markdown'
         )
         poll_state['poll_message_id'] = message.message_id
         save_state()
-        await update.message.reply_text("✅ *Дауыс беру сәтті басталды!*")
+        await update.message.reply_text("✅ *Дауыс беру сәтті басталды!*", parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Error starting poll: {e}")
         poll_state['is_active'] = False 
-        await update.message.reply_text("❌ Дауыс беруді бастау мүмкін болмады. Боттың топта хабарлама жіберуге рұқсаты бар-жоғын тексеріңіз.")
+        await update.message.reply_text("❌ Дауыс беруді бастау мүмкін болмады. Боттың топта хабарлама жіберуге рұқсаты бар-жоғын тексеріңіз.", parse_mode='Markdown')
         
-async def manual_end_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually ends the poll (replaces the scheduled end)."""
-    global poll_state
-    
-    # Restrict usage to the target chat ID for security
-    if str(update.effective_chat.id) != str(poll_state['target_chat_id']):
-         await update.message.reply_text(ONLY_IN_TARGET_CHAT)
-         return
-         
-    if not poll_state['is_active']:
-        await update.message.reply_text(NOT_ACTIVE_MESSAGE)
-        return
-
-    poll_state['is_active'] = False
-    logger.info("Ending lunch poll via /endpoll command.")
-    
-    final_results = format_results_message()
-    
-    # Send final notification and results (new message)
-    await context.bot.send_message(
-        chat_id=poll_state['target_chat_id'],
-        text=f"{POLL_ENDED_ANNOUNCEMENT}{final_results}",
-        parse_mode='Markdown'
-    )
-    save_state()
-    await update.message.reply_text("✅ *Дауыс беру сәтті аяқталды және нәтижелері жарияланды!*")
+# Removed async def manual_end_command...
 
 
 # --- Callback Query Handler (Button Clicks) ---
@@ -209,7 +236,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(text=POLL_INACTIVE_ALERT, show_alert=True)
         return
 
-    # FIX: Get user directly from query.from_user
     user = query.from_user
     user_id = user.id
     user_name = get_voter_name(user) # Pass the User object
@@ -262,7 +288,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("results", results_command))
     application.add_handler(CommandHandler("poll", manual_poll_command))
-    application.add_handler(CommandHandler("endpoll", manual_end_command))
+    # application.add_handler(CommandHandler("endpoll", manual_end_command)) # Removed /endpoll handler
     application.add_handler(CallbackQueryHandler(button_handler))
 
     # --- Start Webhook ---
