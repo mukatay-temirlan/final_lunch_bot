@@ -23,8 +23,9 @@ RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "YOUR_RENDER_URL_HER
 
 # --- Bot Strings (Kazakh Language) ---
 POLL_QUESTION = "Сіз түскі ас ішесіз бе?"
-YES_OPTION = "Иә"
-NO_OPTION = "Жоқ"
+# --- UPDATED BUTTON LABELS WITH EMOJIS FOR COLOR ---
+YES_OPTION = "🟢 Иә"
+NO_OPTION = "🔴 Жоқ"
 WELCOME_MESSAGE = (
     "🤖 *Түскі Ас Ботқа Қош Келдіңіз!* 🤖\n\n"
     "Бұл бот Webhook режимінде жұмыс істейді.\n\n"
@@ -45,7 +46,7 @@ ONLY_IN_TARGET_CHAT = "Бұл пәрменді тек тағайындалған
 MANUAL_POLL_STARTED = "✅ *Дауыс беру қолмен іске қосылды.*"
 NOT_ADMIN_MESSAGE = "❌ Бұл әрекетті орындауға сіздің әкімші құқығыңыз жоқ."
 # New strings for Results button feature
-RESULTS_BUTTON = "Нәтижелерді көру"
+RESULTS_BUTTON = "🔵 Нәтижелерді көру"
 VOTER_ONLY_ALERT = "❌ Нәтижелерді көру үшін алдымен дауыс беріңіз."
 RESULTS_IN_ALERT_HEADER = "📋 Түскі Ас Дауыс Беру Нәтижелері"
 
@@ -124,6 +125,10 @@ def create_poll_keyboard():
 
 def format_results_message():
     """Generates the formatted results string."""
+    # Use the original, non-emoji names for display
+    clean_yes_option = "Иә"
+    clean_no_option = "Жоқ"
+    
     yes_list = "\n- " + "\n- ".join(poll_state['yes_voters'].values()) if poll_state['yes_voters'] else "Ешкім дауыс бермеді"
     no_list = "\n- " + "\n- ".join(poll_state['no_voters'].values()) if poll_state['no_voters'] else "Ешкім дауыс бермеді"
     
@@ -136,9 +141,9 @@ def format_results_message():
         f"{RESULTS_HEADER}"
         f"{date_info}\n\n"
         f"Сұрақ: _{POLL_QUESTION}_\n\n"
-        f"✅ *{YES_OPTION}* ({len(poll_state['yes_voters'])}):\n"
+        f"✅ *{clean_yes_option}* ({len(poll_state['yes_voters'])}):\n"
         f"{yes_list}\n\n"
-        f"❌ *{NO_OPTION}* ({len(poll_state['no_voters'])}):\n"
+        f"❌ *{clean_no_option}* ({len(poll_state['no_voters'])}):\n"
         f"{no_list}\n\n"
         f"Барлығы дауыс берді: *{total_votes}*"
     )
@@ -359,10 +364,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     user_id = user.id
 
-    # --- Results Button Logic ---
+    # --- Results Button Logic (show_results) ---
     if query.data == 'show_results':
         
-        # Check 1: Voter-Only Access (Priority 1)
+        # FIX: Check for voting status by consulting the currently loaded poll_state
         has_voted = user_id in poll_state['yes_voters'] or user_id in poll_state['no_voters']
         
         if not has_voted:
@@ -380,6 +385,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         alert_content = f"{RESULTS_IN_ALERT_HEADER}\n\n{plain_results_text}"
         
         # Display the results in a modal alert (allows scrolling for long lists)
+        # The answer must be immediate to prevent the "Loading" state
         await query.answer(text=alert_content, show_alert=True)
         return
 
@@ -402,23 +408,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check current vote state and update lists
     if vote_type == 'vote_yes':
+        # Check for existing vote before modifying
         if user_id in poll_state['yes_voters']:
-            await query.answer(text=f"Сіздің дауысыңыз *{YES_OPTION}* болып тіркелген.", show_alert=False) 
+            await query.answer(text=f"Сіздің дауысыңыз *Иә* болып тіркелген.", show_alert=False) 
             return
         
         poll_state['yes_voters'][user_id] = user_name
         poll_state['no_voters'].pop(user_id, None) 
         
     elif vote_type == 'vote_no':
+        # Check for existing vote before modifying
         if user_id in poll_state['no_voters']:
-            await query.answer(text=f"Сіздің дауысыңыз *{NO_OPTION}* болып тіркелген.", show_alert=False)
+            await query.answer(text=f"Сіздің дауысыңыз *Жоқ* болып тіркелген.", show_alert=False)
             return
             
         poll_state['no_voters'][user_id] = user_name
         poll_state['yes_voters'].pop(user_id, None) 
 
+    # Save state immediately after voting
     save_state()
+    
     # Confirmation toast for successful vote (2 seconds)
+    # The 'answer' must be the last action for a vote callback
     await query.answer(text=VOTE_REGISTERED_ALERT, show_alert=False)
 
 
@@ -452,9 +463,6 @@ def main():
     load_state()
 
     # 2. Create the Application and JobQueue
-    # FIX for AttributeError: 'ApplicationBuilder' object has no attribute 'tzinfo'
-    # The 'tzinfo' parameter is removed from Application.builder() and only the time objects
-    # used in run_daily need to contain the timezone information.
     application = Application.builder().token(BOT_TOKEN).build()
     job_queue = application.job_queue
 
