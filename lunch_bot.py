@@ -14,8 +14,8 @@ TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003232384383")
 
 # --- Time Constants (Kazakhstan Time Zone - UTC+6) ---
 KAZAKHSTAN_TZ = timezone(timedelta(hours=6))
-POLL_START_TIME = time(8, 0, 0)   # Poll starts at 08:00 AM KZT
-POLL_END_TIME = time(10, 30, 0) # Poll closes at 10:30 AM KZT
+POLL_START_TIME = time(8, 0, 0, tzinfo=KAZAKHSTAN_TZ)   # Poll starts at 08:00 AM KZT (TIME WITH TZINFO)
+POLL_END_TIME = time(10, 30, 0, tzinfo=KAZAKHSTAN_TZ) # Poll closes at 10:30 AM KZT (TIME WITH TZINFO)
 
 # --- RENDER ENVIRONMENT VARS ---
 PORT = int(os.environ.get("PORT", 8080))
@@ -151,8 +151,8 @@ def check_and_expire_poll() -> bool:
         # 2. Convert poll date string to a date object
         poll_date_dt = datetime.strptime(poll_state['lunch_date'], '%Y-%m-%d').date()
 
-        # Check if today is the lunch day and time is past POLL_END_TIME, OR if today is past the lunch day
-        is_past_end_time = (now_kz.date() == poll_date_dt and now_kz.time() > POLL_END_TIME) or (now_kz.date() > poll_date_dt)
+        # Check if today is the lunch day and time is past POLL_END_TIME (excluding tzinfo for comparison), OR if today is past the lunch day
+        is_past_end_time = (now_kz.date() == poll_date_dt and now_kz.time() > POLL_END_TIME.replace(tzinfo=None)) or (now_kz.date() > poll_date_dt)
 
         if is_past_end_time:
             poll_state['is_active'] = False
@@ -415,13 +415,15 @@ def main():
     load_state()
 
     # 2. Create the Application and JobQueue
-    # FIX: Set the timezone on the Application builder itself (for PTB 20.0+)
-    application = Application.builder().token(BOT_TOKEN).tzinfo(KAZAKHSTAN_TZ).build()
+    # FIX for AttributeError: 'ApplicationBuilder' object has no attribute 'tzinfo'
+    # The 'tzinfo' parameter is removed from Application.builder() and only the time objects
+    # used in run_daily need to contain the timezone information.
+    application = Application.builder().token(BOT_TOKEN).build()
     job_queue = application.job_queue
 
     # 3. Schedule and Start JobQueue 
     if job_queue:
-        # FIX: Removed the 'tzinfo' argument from run_daily, as it's now set on the Application
+        # The time objects (POLL_START_TIME, POLL_END_TIME) now contain tzinfo directly (see line 19/20)
         job_queue.run_daily(
             start_poll_job, 
             POLL_START_TIME, 
@@ -429,7 +431,6 @@ def main():
             name='daily_poll_start'
         )
         
-        # FIX: Removed the 'tzinfo' argument from run_daily
         job_queue.run_daily(
             end_poll_job, 
             POLL_END_TIME, 
@@ -437,7 +438,7 @@ def main():
             name='daily_poll_end'
         )
         
-        logger.info(f"Jobs scheduled for start at {POLL_START_TIME} and end at {POLL_END_TIME} KZT.")
+        logger.info(f"Jobs scheduled for start at {POLL_START_TIME.strftime('%H:%M')} and end at {POLL_END_TIME.strftime('%H:%M')} KZT.")
 
         # --- FIX: Start the scheduler manually for webhook mode ---
         job_queue.start()
