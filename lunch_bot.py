@@ -8,7 +8,7 @@ from typing import Dict, Any
 
 # --- Configuration (MUST BE SET) ---
 # 1. BOT TOKEN: Loaded from Render Environment Variable (Secret).
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJschpfWU") 
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAE-b_svsKPdx1niMtek-UU7JBOaQyH2XmE") 
 # 2. TARGET CHAT ID: REPLACE WITH YOUR GROUP/CHAT ID (e.g., -1001234567890)
 TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003197836887") 
 
