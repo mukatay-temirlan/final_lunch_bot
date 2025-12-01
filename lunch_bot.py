@@ -10,14 +10,14 @@ from typing import Dict, Any
 # 1. BOT TOKEN: Loaded from Render Environment Variable (Secret).
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8558478796:AAECHjNWWAQqefRjKX_W4h7lJzJschpfWU") 
 # 2. TARGET CHAT ID: REPLACE WITH YOUR GROUP/CHAT ID (e.g., -1001234567890)
-TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003232384383") 
+TARGET_CHAT_ID_RAW = os.environ.get("TARGET_CHAT_ID", "-1003197836887") 
 
 # --- Time Constants (GMT+5/UTC+5 Time Zone) ---
 KAZAKHSTAN_TZ = timezone(timedelta(hours=5)) # UTC+5 Time Zone
 
 # Scheduled times: Monday to Friday
 POLL_START_TIME = time(8, 0, 0, tzinfo=KAZAKHSTAN_TZ)   # Poll starts at 08:00 AM UTC+5
-POLL_END_TIME = time(10, 30, 0, tzinfo=KAZAKHSTAN_TZ) # Poll closes at 10:30 AM UTC+5
+POLL_END_TIME = time(11, 00, 0, tzinfo=KAZAKHSTAN_TZ) # Poll closes at 10:30 AM UTC+5
 
 # --- RENDER ENVIRONMENT VARS ---
 PORT = int(os.environ.get("PORT", 8080))
